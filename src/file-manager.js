@@ -1,84 +1,107 @@
-import { parseArgs } from "./args.js";
-import { fileURLToPath } from 'url';
-import { dirname } from 'path';
-import { Transform } from "stream";
-import { listFiles } from "./fs/list.js";
+import { homedir } from 'os';
+import parseArgs from "./helpers/args.js";
+import cmd from './cmd/index.js'
+import { ERR_INVALID_INPUT, ERR_OPERATION_FAILED } from "./helpers/const.js";
+import InvalidInputError from "./exceptions/InvalidInputError.js";
+import {
+    printCurrentWorkingDirectory,
+    printGoodbye,
+    printGreeting,
+    printInvalidInput,
+    printPrompt,
+} from "./helpers/printMessage.js";
 
 let username = 'Guest';
-let workingDirectory = '';
+let availableCommands = ['.exit'];
 
-const allowedCommands = [
-    'ls', '.exit'
-]
-
-const getUserName = (args) => {
-    let username = '';
-
-    args.forEach((elem) => {
-        if (elem.prop == 'username') {
-            username = elem.value;
-        }
-    })
-
-    return username;
+const getCurrentDirectory = () => {
+    return process.cwd();
 }
 
-const printGreeting = () => {
-    console.log(`Welcome to the File Manager, ${username}!`);
-}
-const printGoodbye = () => {
-    console.log(`Thank you for using File Manager, ${username}, goodbye!`);
-}
-const printCurrentWorkingDirectory = () => {
-    console.log(`You are currently in ${workingDirectory}!`);
-}
-const printPrompt = () => {
-    process.stdout.write('> ');
-}
-const printInvalidInput = () => {
-    console.log('Invalid input');
+const setExitListener = () => {
+    process.on('exit', () => printGoodbye(username));
+    process.on('SIGINT', () => process.exit());
 }
 
-const getHomeDirectory = () => {
-    return dirname(fileURLToPath(import.meta.url));
+const setHomeDirectory = () => {
+    process.chdir(homedir());
 }
 
-const init = () => {
+const getAvailableCommands = () => {
+    availableCommands.push(...Object.keys(cmd));
+}
+
+const main = () => {
     const args = parseArgs();
-    username = getUserName(args);
-    workingDirectory = getHomeDirectory();
+    username = args.username ?? username;
 
-    printGreeting();
-    printCurrentWorkingDirectory();
-}
+    getAvailableCommands();
+    setHomeDirectory();
+    setExitListener();
+    setUserInputListener();
 
-const waitUserInput = async () => {
+    printGreeting(username);
+    printCurrentWorkingDirectory(getCurrentDirectory());
     printPrompt();
-
-    const myTransformStream = new Transform({
-        transform(chunk, encoding, callback) {
-            const command = chunk.toString().replace(/\n$/, '');
-
-            if (allowedCommands.indexOf(command) === -1) {
-                printInvalidInput();
-            }
-
-            if (command === 'ls') {
-                listFiles(workingDirectory);
-            }
-
-            if (command === '.exit') {
-                process.exit(0);
-            }
-
-            printPrompt();
-            callback();
-        }
-    });
-
-    process.stdin.pipe(myTransformStream).pipe(process.stdout);
 }
 
-init();
+const parseCommandAndArgs = (commandRaw) => {
+    if (commandRaw.indexOf(' ') === -1) {
+        return {
+            command: commandRaw,
+            args: []
+        };
+    }
 
-waitUserInput();
+    const command = commandRaw.substring(0, commandRaw.indexOf(' '));
+    const argsRaw = commandRaw.substring(commandRaw.indexOf(' ') + 1);
+    const args = argsRaw
+        .match(/('[^']+'|"[^"]+"|[^\s]+)(\s+|$)/g)
+        .map((arg) => {
+            arg = arg.trim();
+            if (arg.startsWith('\'') || arg.startsWith('"')) {
+                arg = arg.substring(1, arg.length - 1)
+            }
+            return arg;
+        });
+
+    return {
+        command: command,
+        args: args
+    };
+}
+
+const handleCommand = async (command, args) => {
+    if (!availableCommands.includes(command)) {
+        printInvalidInput();
+        return;
+    }
+
+    if (command === '.exit') {
+        process.exit(0);
+    }
+
+    try {
+        await cmd[command](...args);
+    } catch (error) {
+        if (error instanceof InvalidInputError) {
+            console.error(ERR_INVALID_INPUT);
+        } else {
+            console.error(ERR_OPERATION_FAILED);
+        }
+    }
+}
+
+const setUserInputListener = () => {
+    process.stdin.on('data', async (chunk) => {
+        const commandRaw = chunk.toString().trim();
+        const { command, args } = parseCommandAndArgs(commandRaw);
+
+        await handleCommand(command, args);
+
+        printCurrentWorkingDirectory(getCurrentDirectory());
+        printPrompt();
+    });
+}
+
+main();
